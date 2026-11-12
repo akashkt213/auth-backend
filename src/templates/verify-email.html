@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="light only" />
+  <title>Verify your email address</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f5f7; font-family:Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%;">
+
+  <!-- Preheader (preview text shown in inbox, hidden in body) -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:transparent;">
+    Confirm your email address to finish setting up your account.
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f5f7;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px; background-color:#ffffff; border-radius:8px; border:1px solid #e3e5e8;">
+
+          <!-- Header -->
+          <tr>
+            <td style="padding:32px 40px 0 40px;">
+              <p style="margin:0; font-size:18px; font-weight:bold; color:#111827;">{{appName}}</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:24px 40px 8px 40px;">
+              <h1 style="margin:0 0 16px 0; font-size:22px; line-height:30px; font-weight:bold; color:#111827;">
+                Verify your email address
+              </h1>
+              <p style="margin:0 0 16px 0; font-size:15px; line-height:24px; color:#374151;">
+                Hi {{name}},
+              </p>
+              <p style="margin:0 0 24px 0; font-size:15px; line-height:24px; color:#374151;">
+                Thanks for signing up. Please confirm that this is your email address by clicking the button below.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Button -->
+          <tr>
+            <td align="left" style="padding:0 40px 24px 40px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" bgcolor="#2563eb" style="border-radius:6px;">
+                    <a href="{{verificationLink}}" target="_blank"
+                       style="display:inline-block; padding:12px 28px; font-size:15px; font-weight:bold; color:#ffffff; text-decoration:none; border-radius:6px;">
+                      Verify email
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Fallback link -->
+          <tr>
+            <td style="padding:0 40px 24px 40px;">
+              <p style="margin:0 0 8px 0; font-size:13px; line-height:20px; color:#6b7280;">
+                If the button doesn't work, copy and paste this link into your browser:
+              </p>
+              <p style="margin:0; font-size:13px; line-height:20px; word-break:break-all;">
+                <a href="{{verificationLink}}" target="_blank" style="color:#2563eb; text-decoration:underline;">{{verificationLink}}</a>
+              </p>
+            </td>
+          </tr>
+
+          <!-- Expiry / ignore notice -->
+          <tr>
+            <td style="padding:0 40px 32px 40px; border-top:1px solid #e3e5e8;">
+              <p style="margin:24px 0 0 0; font-size:13px; line-height:20px; color:#6b7280;">
+                This link expires in {{expiresIn}}. If you didn't create an account, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Footer -->
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">
+          <tr>
+            <td align="center" style="padding:24px 16px 0 16px;">
+              <p style="margin:0; font-size:12px; line-height:18px; color:#9ca3af;">
+                &copy; {{year}} {{appName}}. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>
