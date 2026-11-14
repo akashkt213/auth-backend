@@ -6,7 +6,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from 'crypto'
 import { Resend } from 'resend';
 import { readFileSync } from "node:fs";
-import { extractAuthDetails, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS } from "../services/token.service.js";
+import { generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS } from "../services/token.service.js";
 
 const verifyEmailTemplate = readFileSync(
   new URL("../templates/verify-email.html", import.meta.url),
@@ -292,6 +292,35 @@ const UserController = {
       return res.status(500).json({ status_code: 500, message: "Internal server error" });
     }
   },
+
+  logout: async (req: Request, res: Response) => {
+    try {
+      const { refreshToken } = req.body ?? {}
+
+      if (typeof refreshToken !== 'string' || !refreshToken) {
+        return res.status(400).json({ status_code: 400, message: 'Refresh token is required' })
+      }
+
+      await db
+        .update(sessions)
+        .set({
+          revokedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(sessions.refreshTokenHash, hashToken(refreshToken)),
+            isNull(sessions.revokedAt)
+          )
+        );
+
+      return res.status(200).json({ status_code: 200, message: "Logged out successfully" });
+
+    } catch (error) {
+      console.error("Logout error:", error);
+      return res.status(500).json({ status_code: 500, message: "Internal server error" });
+
+    }
+  }
 
 };
 
