@@ -1,17 +1,15 @@
-// src/middleware/authMiddleware.ts
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import type { JwtPayload } from '../types/auth.types.js';
-
-const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'access-secret-key';
+// token.service throws at startup if JWT_ACCESS_SECRET is missing
+import { ACCESS_KEY } from '../services/token.service.js';
 
 export const authenticateToken = (
   req: Request,
   res: Response,
   next: NextFunction
 ): void => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
+  const token = req.cookies?.accessToken ?? req.headers.authorization?.split(" ")[1];
 
   if (!token) {
     res.status(401).json({ message: 'Access denied. No token provided.' });
@@ -19,7 +17,7 @@ export const authenticateToken = (
   }
 
   try {
-    const decoded = jwt.verify(token, ACCESS_SECRET) as JwtPayload;
+    const decoded = jwt.verify(token, ACCESS_KEY) as JwtPayload;
     req.user = decoded;
     
     next();
