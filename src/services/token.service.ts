@@ -24,3 +24,10 @@ export function generateAuthTokens(payload: JwtPayload) {
 
   return { accessToken, refreshToken };
 }
+
+
+export function extractAuthDetails(authToken:string){
+  const res = jwt.decode(authToken)
+  
+  return res;
+}

@@ -6,7 +6,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from 'crypto'
 import { Resend } from 'resend';
 import { readFileSync } from "node:fs";
-import { generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS } from "../services/token.service.js";
+import { extractAuthDetails, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS } from "../services/token.service.js";
 
 const verifyEmailTemplate = readFileSync(
   new URL("../templates/verify-email.html", import.meta.url),
@@ -76,8 +76,8 @@ const UserController = {
           isEmailVerified: users.isEmailVerified,
           createdAt: users.createdAt,
         });
-      
-      if(user){
+
+      if (user) {
         // Generate a fresh token per signup (must not be shared across users)
         const token = crypto.randomBytes(32).toString("hex");
         const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
@@ -123,7 +123,7 @@ const UserController = {
     }
   },
 
-  
+
   login: async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body ?? {};
@@ -157,13 +157,13 @@ const UserController = {
           .json({ status_code: 401, message: "Invalid email or password" });
       }
 
-      if(!user.isEmailVerified){
+      if (!user.isEmailVerified) {
         return res
           .status(400)
           .json({ status_code: 400, message: "Please authenticate your email" });
       }
 
-      const {accessToken,refreshToken} = generateAuthTokens({email:user.email,userId:user.id})
+      const { accessToken, refreshToken } = generateAuthTokens({ email: user.email, userId: user.id })
 
       await db.insert(sessions).values({
         userId: user.id,
@@ -179,7 +179,7 @@ const UserController = {
           user: safeUser,
           accessToken,
           refreshToken,
-      });
+        });
     } catch (error) {
       console.error("Login error:", error);
       return res
@@ -238,6 +238,61 @@ const UserController = {
       return res.status(500).json({ message: "Internal server error" });
     }
   },
+
+  refresh: async (req: Request, res: Response) => {
+    try {
+      const { refreshToken } = req.body ?? {};
+      if (typeof refreshToken !== "string" || !refreshToken) {
+        return res.status(400).json({ status_code: 400, message: "Refresh token is required" });
+      }
+
+      const tokens = await db.transaction(async (tx) => {
+        // Atomically revoke the presented token. Only succeeds if it exists,
+        // isn't revoked and isn't expired, so the same token can't be used twice.
+        const [session] = await tx
+          .update(sessions)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(sessions.refreshTokenHash, hashToken(refreshToken)),
+              isNull(sessions.revokedAt),
+              gt(sessions.expiresAt, new Date()),
+            ),
+          )
+          .returning({ userId: sessions.userId });
+
+        if (!session) return null;
+
+        const [user] = await tx
+          .select({ id: users.id, email: users.email })
+          .from(users)
+          .where(eq(users.id, session.userId))
+          .limit(1);
+
+        if (!user) return null;
+
+        const newTokens = generateAuthTokens({ userId: user.id, email: user.email });
+
+        await tx.insert(sessions).values({
+          userId: user.id,
+          refreshTokenHash: hashToken(newTokens.refreshToken),
+          expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+        });
+
+        return newTokens;
+      });
+
+      if (!tokens) {
+        return res.status(401).json({ status_code: 401, message: "Invalid or expired refresh token" });
+      }
+
+      return res.status(200).json({ status_code: 200, ...tokens });
+    } catch (error) {
+      console.error("Refresh error:", error);
+      return res.status(500).json({ status_code: 500, message: "Internal server error" });
+    }
+  },
+
 };
 
 export default UserController;
