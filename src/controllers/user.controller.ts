@@ -1,11 +1,12 @@
 import type { Request, Response } from "express";
 import { db } from "../db/db.js";
-import { emailVerificationTokens, users } from "../models/auth.schema.js";
+import { emailVerificationTokens, sessions, users } from "../models/auth.schema.js";
 import * as bcrypt from "bcryptjs";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from 'crypto'
 import { Resend } from 'resend';
 import { readFileSync } from "node:fs";
+import { generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS } from "../services/token.service.js";
 
 const verifyEmailTemplate = readFileSync(
   new URL("../templates/verify-email.html", import.meta.url),
@@ -146,14 +147,6 @@ const UserController = {
         .where(eq(users.email, normalizedEmail))
         .limit(1);
 
-      console.log(user)
-
-      if(!user.isEmailVerified){
-        return res
-          .status(400)
-          .json({ status_code: 400, message: "Please authenticate your email" });
-      }
-
       const isMatch =
         !!user?.passwordHash &&
         (await bcrypt.compare(password, user.passwordHash));
@@ -163,6 +156,20 @@ const UserController = {
           .status(401)
           .json({ status_code: 401, message: "Invalid email or password" });
       }
+
+      if(!user.isEmailVerified){
+        return res
+          .status(400)
+          .json({ status_code: 400, message: "Please authenticate your email" });
+      }
+
+      const {accessToken,refreshToken} = generateAuthTokens({email:user.email,userId:user.id})
+
+      await db.insert(sessions).values({
+        userId: user.id,
+        refreshTokenHash: hashToken(refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+      });
       const { passwordHash: _, ...safeUser } = user;
       return res
         .status(200)
@@ -170,7 +177,9 @@ const UserController = {
           status_code: 200,
           message: "Login successful",
           user: safeUser,
-        });
+          accessToken,
+          refreshToken,
+      });
     } catch (error) {
       console.error("Login error:", error);
       return res
