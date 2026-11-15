@@ -6,7 +6,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from 'crypto'
 import { Resend } from 'resend';
 import { readFileSync } from "node:fs";
-import { generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS } from "../services/token.service.js";
+import { clearAuthCookies, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS, setAuthCookies } from "../services/token.service.js";
 
 const verifyEmailTemplate = readFileSync(
   new URL("../templates/verify-email.html", import.meta.url),
@@ -170,6 +170,7 @@ const UserController = {
         refreshTokenHash: hashToken(refreshToken),
         expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
       });
+      setAuthCookies(res, { accessToken, refreshToken });
       const { passwordHash: _, ...safeUser } = user;
       return res
         .status(200)
@@ -177,8 +178,6 @@ const UserController = {
           status_code: 200,
           message: "Login successful",
           user: safeUser,
-          accessToken,
-          refreshToken,
         });
     } catch (error) {
       console.error("Login error:", error);
@@ -241,7 +240,7 @@ const UserController = {
 
   refresh: async (req: Request, res: Response) => {
     try {
-      const { refreshToken } = req.body ?? {};
+      const refreshToken = req.cookies?.refreshToken;
       if (typeof refreshToken !== "string" || !refreshToken) {
         return res.status(400).json({ status_code: 400, message: "Refresh token is required" });
       }
@@ -283,10 +282,12 @@ const UserController = {
       });
 
       if (!tokens) {
+        clearAuthCookies(res);
         return res.status(401).json({ status_code: 401, message: "Invalid or expired refresh token" });
       }
+      setAuthCookies(res, tokens);
 
-      return res.status(200).json({ status_code: 200, ...tokens });
+      return res.status(200).json({ status_code: 200, message: "Token refreshed" });
     } catch (error) {
       console.error("Refresh error:", error);
       return res.status(500).json({ status_code: 500, message: "Internal server error" });
@@ -295,32 +296,58 @@ const UserController = {
 
   logout: async (req: Request, res: Response) => {
     try {
-      const { refreshToken } = req.body ?? {}
+      const refreshToken = req.cookies?.refreshToken;
 
-      if (typeof refreshToken !== 'string' || !refreshToken) {
-        return res.status(400).json({ status_code: 400, message: 'Refresh token is required' })
+      if (typeof refreshToken === "string" && refreshToken) {
+        await db
+          .update(sessions)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(sessions.refreshTokenHash, hashToken(refreshToken)),
+              isNull(sessions.revokedAt),
+            ),
+          );
       }
 
-      await db
-        .update(sessions)
-        .set({
-          revokedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(sessions.refreshTokenHash, hashToken(refreshToken)),
-            isNull(sessions.revokedAt)
-          )
-        );
-
+      clearAuthCookies(res);
       return res.status(200).json({ status_code: 200, message: "Logged out successfully" });
-
-    } catch (error) {
+    }  catch (error) {
       console.error("Logout error:", error);
       return res.status(500).json({ status_code: 500, message: "Internal server error" });
 
     }
-  }
+  },
+
+  me: async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.userId;
+      if (!userId) {
+        return res.status(401).json({ status_code: 401, message: "Unauthorized" });
+      }
+
+      const [user] = await db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          isEmailVerified: users.isEmailVerified,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+
+      if (!user) {
+        return res.status(404).json({ status_code: 404, message: "User not found" });
+      }
+
+      return res.status(200).json({ status_code: 200, user });
+    } catch (error) {
+      console.error("Me error:", error);
+      return res.status(500).json({ status_code: 500, message: "Internal server error" });
+    }
+  },
 
 };
 
