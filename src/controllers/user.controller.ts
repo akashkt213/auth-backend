@@ -100,7 +100,7 @@ const UserController = {
         });
 
         const { error: emailError } = await resend.emails.send({
-          from: 'onboarding@resend.dev',
+          from: 'no-reply@contact.akashkt.xyz',
           to: user.email,
           subject: 'Verify your email address',
           html,
