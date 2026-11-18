@@ -1,17 +1,27 @@
-import type { Request, Response } from "express";
+import type { CookieOptions, Request, Response } from "express";
 import { db } from "../db/db.js";
-import { emailVerificationTokens, sessions, users } from "../models/auth.schema.js";
+import { emailVerificationTokens, oauthAccounts, sessions, users } from "../models/auth.schema.js";
 import * as bcrypt from "bcryptjs";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from 'crypto'
 import { Resend } from 'resend';
 import { readFileSync } from "node:fs";
-import { clearAuthCookies, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS, setAuthCookies } from "../services/token.service.js";
+import { clearAuthCookies, createSession, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS, setAuthCookies } from "../services/token.service.js";
+import { createGoogleAuthRequest, getGoogleProfile } from "../services/google.service.js";
 
 const verifyEmailTemplate = readFileSync(
   new URL("../templates/verify-email.html", import.meta.url),
   "utf8",
 );
+
+const oauthCookie: CookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",                  // must be lax: the callback is a cross-site redirect from google.com
+  path: "/api/auth/google",         // only sent to the Google routes
+  maxAge: 10 * 60 * 1000,           // 10 minutes to complete the login
+};
+
 
 function escapeHtml(value: string): string {
   return value
@@ -162,15 +172,7 @@ const UserController = {
           .status(400)
           .json({ status_code: 400, message: "Please authenticate your email" });
       }
-
-      const { accessToken, refreshToken } = generateAuthTokens({ email: user.email, userId: user.id })
-
-      await db.insert(sessions).values({
-        userId: user.id,
-        refreshTokenHash: hashToken(refreshToken),
-        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
-      });
-      setAuthCookies(res, { accessToken, refreshToken });
+      await createSession(res,user)
       const { passwordHash: _, ...safeUser } = user;
       return res
         .status(200)
@@ -186,6 +188,123 @@ const UserController = {
         .json({ status_code: 500, message: "Internal server error" });
     }
   },
+
+  googleStart: async (req: Request, res: Response) => {
+    try {
+      const { url, state, codeVerifier } = await createGoogleAuthRequest();
+      res.cookie("oauth_state", state, oauthCookie);
+      res.cookie("oauth_code_verifier", codeVerifier, oauthCookie);
+      return res.redirect(url);
+    } catch (error) {
+      console.error("Google start error:", error);
+      return res.status(500).json({ status_code: 500, message: "Internal server error" });
+    }
+  },
+
+  googleCallback: async (req: Request, res: Response) => {
+    // Single-use: clear the temporary cookies whatever happens
+    const expectedState = req.cookies?.oauth_state;
+    const codeVerifier = req.cookies?.oauth_code_verifier;
+    res.clearCookie("oauth_state", { ...oauthCookie, maxAge: undefined });
+    res.clearCookie("oauth_code_verifier", { ...oauthCookie, maxAge: undefined });
+
+    try {
+      const { code, state, error } = req.query;
+
+      // User clicked "Cancel" on Google's screen
+      if (error) {
+        return res.status(400).json({ status_code: 400, message: "Google login was cancelled" });
+      }
+
+      if (
+        typeof code !== "string" ||
+        typeof state !== "string" ||
+        typeof expectedState !== "string" ||
+        typeof codeVerifier !== "string" ||
+        state !== expectedState
+      ) {
+        return res.status(400).json({ status_code: 400, message: "Invalid OAuth state" });
+      }
+
+      const profile = await getGoogleProfile(code, codeVerifier);
+
+      const user = await db.transaction(async (tx) => {
+        // Case A: returning Google user
+        const [linked] = await tx
+          .select({ id: users.id, email: users.email })
+          .from(oauthAccounts)
+          .innerJoin(users, eq(oauthAccounts.userId, users.id))
+          .where(
+            and(
+              eq(oauthAccounts.provider, "google"),
+              eq(oauthAccounts.providerAccountId, profile.sub),
+            ),
+          )
+          .limit(1);
+
+        if (linked) return linked;
+
+        // Cases B and C both trust the email, so Google must have verified it
+        if (!profile.emailVerified) return null;
+
+        const [existing] = await tx
+          .select()
+          .from(users)
+          .where(eq(users.email, profile.email))
+          .limit(1);
+
+        let account: { id: string; email: string };
+
+        if (existing) {
+          // Case B: link to the existing account
+          await tx
+            .update(users)
+            .set({
+              isEmailVerified: true,
+              // Pre-account-takeover protection: an unverified account's password
+              // may have been set by someone else.
+              ...(existing.isEmailVerified ? {} : { passwordHash: null }),
+            })
+            .where(eq(users.id, existing.id));
+          account = { id: existing.id, email: existing.email };
+        } else {
+          // Case C: brand-new user
+          const [created] = await tx
+            .insert(users)
+            .values({
+              name: profile.name,
+              email: profile.email,
+              passwordHash: null,
+              isEmailVerified: true,
+            })
+            .returning({ id: users.id, email: users.email });
+          account = created!;
+        }
+
+        await tx.insert(oauthAccounts).values({
+          userId: account.id,
+          provider: "google",
+          providerAccountId: profile.sub,
+        });
+
+        return account;
+      });
+
+      if (!user) {
+        return res.status(400).json({ status_code: 400, message: "Your Google email is not verified" });
+      }
+
+      await createSession(res, user);
+
+      // No frontend yet: land on /me to see the result. Later: res.redirect(process.env.FRONTEND_URL!)
+      return res.redirect("/api/me");
+    } catch (error) {
+      console.error("Google callback error:", error);
+      return res.status(500).json({ status_code: 500, message: "Google login failed" });
+    }
+  },
+
+
 
   verifyEmail: async (req: Request, res: Response) => {
     try {
