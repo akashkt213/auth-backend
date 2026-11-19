@@ -4,15 +4,9 @@ import { emailVerificationTokens, oauthAccounts, sessions, users } from "../mode
 import * as bcrypt from "bcryptjs";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import crypto from 'crypto'
-import { Resend } from 'resend';
-import { readFileSync } from "node:fs";
+import { sendVerificationLink } from "../services/emailsend.service.js";
 import { clearAuthCookies, createSession, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS, setAuthCookies } from "../services/token.service.js";
 import { createGoogleAuthRequest, getGoogleProfile } from "../services/google.service.js";
-
-const verifyEmailTemplate = readFileSync(
-  new URL("../templates/verify-email.html", import.meta.url),
-  "utf8",
-);
 
 const oauthCookie: CookieOptions = {
   httpOnly: true,
@@ -22,29 +16,11 @@ const oauthCookie: CookieOptions = {
   maxAge: 10 * 60 * 1000,           // 10 minutes to complete the login
 };
 
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function renderTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/{{(\w+)}}/g, (_, key) => vars[key] ?? "");
-}
-
-
 async function hashPassword(plainTextPassword: string): Promise<string> {
   const saltRounds = 10;
   const hashedPassword = await bcrypt.hash(plainTextPassword, saltRounds);
   return hashedPassword;
 }
-
-const resend = new Resend(process.env.EMAIL_API_KEY);
-
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -88,37 +64,7 @@ const UserController = {
         });
 
       if (user) {
-        // Generate a fresh token per signup (must not be shared across users)
-        const token = crypto.randomBytes(32).toString("hex");
-        const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-
-        await db.insert(emailVerificationTokens).values({
-          userId: user.id,
-          tokenHash,
-          expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-        });
-
-        const appUrl = process.env.APP_URL ?? "http://localhost:3000";
-        const verificationLink = `${appUrl}/api/verify-email?token=${token}`;
-
-        const html = renderTemplate(verifyEmailTemplate, {
-          appName: "Auth System",
-          name: escapeHtml(user.name),
-          verificationLink,
-          expiresIn: "15 minutes",
-          year: String(new Date().getFullYear()),
-        });
-
-        const { error: emailError } = await resend.emails.send({
-          from: 'no-reply@contact.akashkt.xyz',
-          to: user.email,
-          subject: 'Verify your email address',
-          html,
-        });
-
-        if (emailError) {
-          console.error("Failed to send verification email:", emailError);
-        }
+        await sendVerificationLink(user);
       }
 
       return res.status(201).json({ message: "User created", user });
@@ -133,6 +79,40 @@ const UserController = {
     }
   },
 
+  resendVerificationEmail: async (req: Request, res: Response) => {
+
+    const genericResponse = {
+      message: "If that account exists and isn't verified yet, a new link has been sent",
+    };
+
+    try {
+      const { email } = req.body ?? {};
+      if (typeof email !== 'string' || !email.trim()) {
+        return res.status(400).json({ status_code: 400, message: "Email is required" })
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const [user] = await db.select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        isEmailVerified: users.isEmailVerified
+      }).from(users).where(eq(users.email, normalizedEmail)).limit(1)
+
+      if (!user || user.isEmailVerified) {
+        return res.status(200).json(genericResponse);
+      }
+
+      await db.update(emailVerificationTokens)
+        .set({ usedAt: new Date() }).where(and(eq(emailVerificationTokens.userId, user.id), isNull(emailVerificationTokens.usedAt)))
+
+      await sendVerificationLink(user);
+      return res.status(200).json(genericResponse);
+    } catch (error) {
+      console.error("Resend verification error:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  },
 
   login: async (req: Request, res: Response) => {
     try {
@@ -431,7 +411,7 @@ const UserController = {
 
       clearAuthCookies(res);
       return res.status(200).json({ status_code: 200, message: "Logged out successfully" });
-    }  catch (error) {
+    } catch (error) {
       console.error("Logout error:", error);
       return res.status(500).json({ status_code: 500, message: "Internal server error" });
 
