@@ -2,6 +2,8 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import type { JwtPayload } from "../types/auth.types.js";
 import type { Response, CookieOptions } from "express";
+import { db } from "../db/db.js";
+import { sessions } from "../models/auth.schema.js";
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -44,4 +46,21 @@ export function generateAuthTokens(payload: JwtPayload) {
   const refreshToken = crypto.randomBytes(32).toString("hex");
 
   return { accessToken, refreshToken };
+}
+
+
+
+export async function createSession(res:Response,user:{id:string,email:string}){
+  const tokens = generateAuthTokens({
+    email:user.email,
+    userId:user.id
+  })
+
+  await db.insert(sessions).values({
+    userId:user.id,
+    refreshTokenHash:hashToken(tokens.refreshToken),
+    expiresAt:new Date(Date.now()+ REFRESH_TOKEN_TTL_MS)
+  })
+
+  setAuthCookies(res,tokens)
 }

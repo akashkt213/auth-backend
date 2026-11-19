@@ -7,6 +7,8 @@ const userRoutes = Router()
 
 userRoutes.post('/signup', emailIpLimiter, UserController.signup)
 userRoutes.post('/login', loginLimiter, UserController.login)
+userRoutes.get('/auth/google', UserController.googleStart)
+userRoutes.get('/auth/google/callback', UserController.googleCallback)
 userRoutes.get('/verify-email',UserController.verifyEmail)
 userRoutes.post('/refresh',UserController.refresh)
 userRoutes.post('/logout',UserController.logout)
