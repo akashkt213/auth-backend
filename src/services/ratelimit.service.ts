@@ -26,9 +26,12 @@ export const emailIpLimiter = rateLimit({
   message: { message: "Too many requests, try again later" },
 });
 
-// Resend: per email address, whatever IP the request comes from
+// Resend: per email address, whatever IP the request comes from.
+// ipv6Subnet only applies to the default IP-based key, so it's omitted here.
+const { ipv6Subnet: _ipv6Subnet, ...baseWithoutSubnet } = base;
+
 export const resendPerEmailLimiter = rateLimit({
-  ...base,
+  ...baseWithoutSubnet,
   windowMs: 15 * 60 * 1000,
   limit: 3,
   keyGenerator: (req) =>
