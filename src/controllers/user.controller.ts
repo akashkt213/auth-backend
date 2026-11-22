@@ -1,8 +1,8 @@
 import type { CookieOptions, Request, Response } from "express";
 import { db } from "../db/db.js";
-import { emailVerificationTokens, oauthAccounts, sessions, users } from "../models/auth.schema.js";
+import { emailVerificationTokens, oauthAccounts, passwordResetTokens, sessions, users } from "../models/auth.schema.js";
 import * as bcrypt from "bcryptjs";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import crypto from 'crypto'
 import { sendVerificationLink } from "../services/emailsend.service.js";
 import { clearAuthCookies, createSession, generateAuthTokens, hashToken, REFRESH_TOKEN_TTL_MS, setAuthCookies } from "../services/token.service.js";
@@ -64,7 +64,7 @@ const UserController = {
         });
 
       if (user) {
-        await sendVerificationLink(user);
+        await sendVerificationLink(user, "VERIFY_EMAIL");
       }
 
       return res.status(201).json({ message: "User created", user });
@@ -99,18 +99,17 @@ const UserController = {
         isEmailVerified: users.isEmailVerified
       }).from(users).where(eq(users.email, normalizedEmail)).limit(1)
 
-      if (!user || user.isEmailVerified) {
-        return res.status(200).json(genericResponse);
-      }
+      // Reply first, so response time doesn't reveal whether the account exists
+      res.status(200).json(genericResponse);
+      if (!user || user.isEmailVerified) return;
 
       await db.update(emailVerificationTokens)
         .set({ usedAt: new Date() }).where(and(eq(emailVerificationTokens.userId, user.id), isNull(emailVerificationTokens.usedAt)))
 
-      await sendVerificationLink(user);
-      return res.status(200).json(genericResponse);
+      await sendVerificationLink(user, "VERIFY_EMAIL");
     } catch (error) {
       console.error("Resend verification error:", error);
-      return res.status(500).json({ message: "Internal server error" });
+      if (!res.headersSent) res.status(500).json({ message: "Internal server error" });
     }
   },
 
@@ -152,7 +151,7 @@ const UserController = {
           .status(400)
           .json({ status_code: 400, message: "Please authenticate your email" });
       }
-      await createSession(res,user)
+      await createSession(res, user)
       const { passwordHash: _, ...safeUser } = user;
       return res
         .status(200)
@@ -444,6 +443,110 @@ const UserController = {
       return res.status(200).json({ status_code: 200, user });
     } catch (error) {
       console.error("Me error:", error);
+      return res.status(500).json({ status_code: 500, message: "Internal server error" });
+    }
+  },
+
+  forgotPassword: async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body ?? {}
+
+      if (typeof email !== 'string' || !email.trim()) {
+        return res.status(400).json({ status_code: 400, message: "Email is required" })
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      if (!EMAIL_RE.test(normalizedEmail)) {
+        return res.status(400).json({ message: "Invalid email address" });
+      }
+
+      const [user] = await db.select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        isEmailVerified: users.isEmailVerified
+      }).from(users).where(eq(users.email, normalizedEmail)).limit(1)
+
+      res.status(200).json({ message: "If that account exists, a reset link has been sent" });
+
+      if (!user?.isEmailVerified) return;
+
+      await db.update(passwordResetTokens)
+        .set({ usedAt: new Date() })
+        .where(and(eq(passwordResetTokens.userId, user.id), isNull(passwordResetTokens.usedAt)));
+
+      await sendVerificationLink(user, "FORGOT_PASSWORD");
+
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      if (!res.headersSent) res.status(500).json({ message: "Internal server error" });
+    }
+  },
+
+  resetPassword: async (req: Request, res: Response) => {
+    try {
+      const { newPassword } = req.body ?? {};
+      // Prefer the body: query strings end up in server and proxy logs
+      const token = req.body?.token ?? req.query.token;
+
+      if (!token || typeof token !== "string") {
+        return res.status(400).json({ status_code: 400, message: "Reset token is required" });
+      }
+      if (typeof newPassword !== "string" || newPassword.length < 8) {
+        return res.status(400).json({ status_code: 400, message: "Password must be at least 8 characters" });
+      }
+      // bcrypt ignores everything after 72 bytes (bytes, not characters)
+      if (bcrypt.truncates(newPassword)) {
+        return res.status(400).json({ status_code: 400, message: "Password must be at most 72 bytes" });
+      }
+
+      // bcrypt is slow on purpose, so do it before the transaction takes any locks
+      const passwordHash = await hashPassword(newPassword);
+
+      const wasReset = await db.transaction(async (tx) => {
+        // 1. Claim the token, same pattern as verifyEmail
+        const [claimed] = await tx
+          .update(passwordResetTokens)
+          .set({ usedAt: new Date() })
+          .where(
+            and(
+              eq(passwordResetTokens.tokenHash, hashToken(token)),
+              isNull(passwordResetTokens.usedAt),
+              gt(passwordResetTokens.expiresAt, new Date()),
+            ),
+          )
+          .returning({ userId: passwordResetTokens.userId });
+
+        if (!claimed) return false;
+
+        // 2. Change the password
+        await tx.update(users).set({ passwordHash }).where(eq(users.id, claimed.userId));
+
+        // 3. Cancel any other reset links for this user
+        await tx
+          .update(passwordResetTokens)
+          .set({ usedAt: new Date() })
+          .where(and(eq(passwordResetTokens.userId, claimed.userId), isNull(passwordResetTokens.usedAt)));
+
+        // 4. Log out every device. The lock waits for refreshes that are mid-way, otherwise
+        // the session they are inserting would survive the revoke. Released on commit.
+        await tx.execute(sql`LOCK TABLE ${sessions} IN SHARE ROW EXCLUSIVE MODE`);
+        await tx
+          .update(sessions)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(sessions.userId, claimed.userId), isNull(sessions.revokedAt)));
+
+        return true;
+      });
+
+      if (!wasReset) {
+        return res.status(400).json({ status_code: 400, message: "Reset link is invalid or has expired" });
+      }
+
+      clearAuthCookies(res);
+      return res.status(200).json({ status_code: 200, message: "Password reset successfully. Please log in again." });
+    } catch (error) {
+      console.error("Reset password error:", error);
       return res.status(500).json({ status_code: 500, message: "Internal server error" });
     }
   },

@@ -1,10 +1,18 @@
 import { readFileSync } from "node:fs";
 import { Resend } from "resend";
 import { db } from "../db/db.js";
-import { emailVerificationTokens } from "../models/auth.schema.js";
+import { emailVerificationTokens, passwordResetTokens } from "../models/auth.schema.js";
 import crypto from "crypto";
+import { hashToken } from "./token.service.js";
+
+
+type EmailType = "VERIFY_EMAIL" | "FORGOT_PASSWORD"
+type UserType = { id: string; name: string; email: string }
+
+const TOKEN_TTL_MINUTES = 15;
 
 const resend = new Resend(process.env.EMAIL_API_KEY);
+
 
 function escapeHtml(value: string): string {
   return value
@@ -24,35 +32,59 @@ const verifyEmailTemplate = readFileSync(
   "utf8",
 );
 
-export async function sendVerificationLink(user: { id: string; name: string; email: string }){
-  const token = crypto.randomBytes(32).toString("hex");
-  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+const forgotPasswordTemplate = readFileSync(
+  new URL("../templates/forgot-password.html", import.meta.url),
+  "utf8",
+);
 
-  await db.insert(emailVerificationTokens).values({
+// Everything that differs between the email types. Record<EmailType, ...> makes
+// TypeScript complain if a new type is added without an entry here.
+const emailConfig = {
+  VERIFY_EMAIL: {
+    table: emailVerificationTokens,
+    template: verifyEmailTemplate,
+    subject: "Verify your email address",
+    linkName: "verificationLink",
+    // Opens the API directly
+    url: `${process.env.APP_URL ?? "http://localhost:3000"}/api/verify-email`,
+  },
+  FORGOT_PASSWORD: {
+    table: passwordResetTokens,
+    template: forgotPasswordTemplate,
+    subject: "Reset your password",
+    linkName: "resetLink",
+    // Opens the frontend, which needs to show a new-password form
+    url: `${process.env.FRONTEND_URL ?? "http://localhost:5173"}/reset-password`,
+  },
+} satisfies Record<EmailType, object>;
+
+export async function sendVerificationLink(user: UserType, type: EmailType) {
+  const { table, template, subject, linkName, url } = emailConfig[type];
+
+  const token = crypto.randomBytes(32).toString("hex");
+
+  await db.insert(table).values({
     userId: user.id,
-    tokenHash,
-    expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+    tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + TOKEN_TTL_MINUTES * 60 * 1000),
   });
 
-  const appUrl = process.env.APP_URL ?? "http://localhost:3000";
-  const verificationLink = `${appUrl}/api/verify-email?token=${token}`;
-
-  const html = renderTemplate(verifyEmailTemplate, {
+  const html = renderTemplate(template, {
     appName: "Auth System",
     name: escapeHtml(user.name),
-    verificationLink,
-    expiresIn: "15 minutes",
+    [linkName]: `${url}?token=${token}`,
+    expiresIn: `${TOKEN_TTL_MINUTES} minutes`,
     year: String(new Date().getFullYear()),
   });
 
-  const { error: emailError } = await resend.emails.send({
-    from: 'no-reply@contact.akashkt.xyz',
+  const { error } = await resend.emails.send({
+    from: "no-reply@contact.akashkt.xyz",
     to: user.email,
-    subject: 'Verify your email address',
+    subject,
     html,
   });
 
-  if (emailError) {
-    console.error("Failed to send verification email:", emailError);
+  if (error) {
+    console.error(`Failed to send ${type} email:`, error);
   }
 }
