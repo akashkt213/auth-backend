@@ -1,11 +1,15 @@
 import {
   boolean,
+  pgEnum,
   pgTable,
   timestamp,
   uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { companies } from "./company.schema.js";
+
+export const userRole = pgEnum("user_role", ["admin", "user"]);
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -13,6 +17,8 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: varchar("password_hash", { length: 255 }),
   isEmailVerified: boolean("is_email_verified").notNull().default(false),
+  companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
+  role: userRole("role").notNull().default("user"),
   createdAt: timestamp("created_at", {
     withTimezone: true,
   }).defaultNow(),
