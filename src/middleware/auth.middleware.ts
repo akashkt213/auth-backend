@@ -17,7 +17,7 @@ export const authenticateToken = (
   }
 
   try {
-    const decoded = jwt.verify(token, ACCESS_KEY,{algorithms:['HS256']}) as JwtPayload;
+    const decoded = jwt.verify(token, ACCESS_KEY, { algorithms: ['HS256'] }) as JwtPayload;
     req.user = decoded;
     
     next();
