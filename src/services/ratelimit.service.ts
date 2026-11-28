@@ -40,7 +40,10 @@ export const resendPerEmailLimiter = rateLimit({
 // Reset is public and runs bcrypt, so cap it per IP
 export const resetIpLimiter = rateLimit({ ...base, windowMs: 15 * 60 * 1000, limit: 10 });
 
-export const forgotIpLimiter = rateLimit({ ...base, windowMs: 60 * 60 * 1000, limit: 5 });
+// Accept invite is public and runs bcrypt for new accounts, so cap it per IP
+export const acceptInviteIpLimiter = rateLimit({ ...base, windowMs: 15 * 60 * 1000, limit: 10 });
+
+export const forgotIpLimiter =rateLimit({ ...base, windowMs: 60 * 60 * 1000, limit: 5 });
 
 export const forgotPerEmailLimiter = rateLimit({
   ...baseWithoutSubnet,
