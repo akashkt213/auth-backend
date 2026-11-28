@@ -88,3 +88,40 @@ export async function sendVerificationLink(user: UserType, type: EmailType) {
     console.error(`Failed to send ${type} email:`, error);
   }
 }
+
+const inviteTemplate = readFileSync(
+  new URL("../templates/invite.html", import.meta.url),
+  "utf8",
+);
+
+export const INVITE_TTL_DAYS = 7;
+
+// The caller creates the invitation row and passes the *raw* token; only its hash is stored.
+export async function sendInvitationEmail(params: {
+  to: string;
+  token: string;
+  inviterName: string;
+  companyName: string;
+}) {
+  const inviteLink = `${process.env.FRONTEND_URL ?? "http://localhost:5173"}/accept-invite?token=${params.token}`;
+
+  const html = renderTemplate(inviteTemplate, {
+    appName: "Auth System",
+    inviterName: escapeHtml(params.inviterName),
+    companyName: escapeHtml(params.companyName),
+    inviteLink,
+    expiresIn: `${INVITE_TTL_DAYS} days`,
+    year: String(new Date().getFullYear()),
+  });
+
+  const { error } = await resend.emails.send({
+    from: "no-reply@contact.akashkt.xyz",
+    to: params.to,
+    subject: `${params.inviterName} invited you to join ${params.companyName}`,
+    html,
+  });
+
+  if (error) {
+    console.error("Failed to send invitation email:", error);
+  }
+}
